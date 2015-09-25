@@ -31,6 +31,7 @@ module ActiveShipping
     ENDPOINT = "https://soa-gw.canadapost.ca/"    # production
 
     SHIPMENT_MIMETYPE = "application/vnd.cpc.ncshipment+xml"
+    CONTRACT_SHIPMENT_MIMETYPE = "application/vnd.cpc.shipment-v7+xml"
     RATE_MIMETYPE = "application/vnd.cpc.ship.rate+xml"
     TRACK_MIMETYPE = "application/vnd.cpc.track+xml"
     REGISTER_MIMETYPE = "application/vnd.cpc.registration+xml"
@@ -55,11 +56,215 @@ module ActiveShipping
       @endpoint = options[:endpoint] || ENDPOINT
       @platform_id = options[:platform_id]
       @customer_number = options[:customer_number]
+      @logger = Logger.new(STDOUT)
       super(options)
     end
 
     def requirements
       [:api_key, :secret]
+    end
+
+    ################################################
+    #Contract shipping
+    ################################################
+
+    def create_contract_shipment(origin, destination, package, line_items = [], options = {})
+      request_body = build_contract_shipment_request(origin, destination, package, line_items, options)
+      response = ssl_post(create_contract_shipment_url(options), request_body, headers(options, CONTRACT_SHIPMENT_MIMETYPE, CONTRACT_SHIPMENT_MIMETYPE))
+      parse_contract_shipment_response(response)
+    rescue ActiveUtils::ResponseError, ActiveShipping::ResponseError => e
+      error_response(e.response.body, CPPWSContractShippingResponse)
+    rescue MissingCustomerNumberError
+      CPPWSContractShippingResponse.new(false, "Missing Customer Number", {}, :carrier => @@name)
+    end
+
+    def build_contract_shipment_request(origin, destination, package, line_items = [], options = {})
+      origin = sanitize_location(origin)
+      destination = sanitize_location(destination)
+
+      builder = Nokogiri::XML::Builder.new do |xml|
+        xml.public_send('shipment', :xmlns => "http://www.canadapost.ca/ws/shipment-v7") do
+          xml.public_send('group-id', options[:group_id] || "#{origin.company}#{Time.now.strftime("%Y%m%d").to_i}")
+          xml.public_send('requested-shipping-point', origin.postal_code)
+          xml.public_send('cpc-pickup-indicator', true)
+          xml.public_send('delivery-spec') do
+            shipment_service_code_node(xml, options)
+            contract_shipment_sender_node(xml, origin, options)
+            contract_shipment_destination_node(xml, destination, options)
+            contract_shipment_options_node(xml, options)
+            contract_shipment_parcel_node(xml, package)
+            contract_shipment_notification_node(xml, options)
+            contract_shipment_print_preferences_node(xml, options)
+            contract_shipment_preferences_node(xml, options)
+            contract_shipment_settlement_info_node(xml, options)
+            contract_references_node(xml, options)             # optional > user defined custom notes
+            contract_shipment_customs_node(xml, destination, line_items, options)
+            # COD Remittance defaults to sender
+          end
+        end
+      end
+      builder.to_xml
+    end
+
+    def contract_shipment_sender_node(xml, location, options)
+      xml.public_send('sender') do
+        xml.public_send('name', location.name)
+        xml.public_send('company', location.company) if location.company.present?
+        xml.public_send('contact-phone', location.phone)
+        xml.public_send('address-details') do
+          xml.public_send('address-line-1', location.address1)
+          xml.public_send('address-line-2', location.address2_and_3) unless location.address2_and_3.blank?
+          xml.public_send('city', location.city)
+          xml.public_send('prov-state', location.province)
+          xml.public_send('country-code', location.country_code)
+          xml.public_send('postal-zip-code', location.postal_code)
+        end
+      end
+    end
+
+    def contract_shipment_destination_node(xml, location, options)
+      xml.public_send('destination') do
+        xml.public_send('name', location.name)
+        xml.public_send('company', location.company) if location.company.present?
+        xml.public_send('client-voice-number', location.phone)
+        xml.public_send('address-details') do
+          xml.public_send('address-line-1', location.address1)
+          xml.public_send('address-line-2', location.address2_and_3) unless location.address2_and_3.blank?
+          xml.public_send('city', location.city)
+          xml.public_send('prov-state', location.province) unless location.province.blank?
+          xml.public_send('country-code', location.country_code)
+          xml.public_send('postal-zip-code', location.postal_code)
+        end
+      end
+    end
+
+    def contract_references_node(xml, options)
+      # custom values
+      # xml.public_send('references') do
+      # end
+    end
+    git
+    def contract_shipment_options_node(xml, options)
+      contract_shipping_options_node(xml, SHIPPING_OPTIONS, options)
+    end
+
+    def contract_shipping_options_node(xml, available_options, options = {})
+      return if (options.symbolize_keys.keys & available_options).empty?
+      xml.public_send('options') do
+
+        if options[:cod] && options[:cod_amount]
+          xml.public_send('option') do
+            xml.public_send('option-code', 'COD')
+            xml.public_send('option-amount', options[:cod_amount])
+            xml.public_send('option-qualifier-1', options[:cod_includes_shipping]) unless options[:cod_includes_shipping].blank?
+            xml.public_send('option-qualifier-2', options[:cod_method_of_payment]) unless options[:cod_method_of_payment].blank?
+          end
+        end
+
+        if options[:cov]
+          xml.public_send('option') do
+            xml.public_send('option-code', 'COV')
+            xml.public_send('option-amount', options[:cov_amount]) unless options[:cov_amount].blank?
+          end
+        end
+
+        if options[:d2po]
+          xml.public_send('option') do
+            xml.public_send('option-code', 'D2PO')
+            xml.public_send('option-qualifier-2'. options[:d2po_office_id]) unless options[:d2po_office_id].blank?
+          end
+        end
+
+        [:so, :dc, :pa18, :pa19, :hfp, :dns, :lad, :rase, :rts, :aban].each do |code|
+          if options[code]
+            xml.public_send('option') do
+              xml.public_send('option-code', code.to_s.upcase)
+            end
+          end
+        end
+      end
+    end
+
+
+    def contract_shipment_notification_node(xml, options)
+      return unless options[:notification_email]
+      xml.public_send('notification') do
+        xml.public_send('email', options[:notification_email])
+        xml.public_send('on-shipment', true)
+        xml.public_send('on-exception', true)
+        xml.public_send('on-delivery', true)
+      end
+    end
+
+    def contract_shipment_print_preferences_node(xml, options)
+      xml.public_send('print-preferences') do
+        xml.public_send('output-format', options[:output_format])  unless options[:output_format].blank?
+        xml.public_send('encoding', 'ZPL')  unless options[:encoding].blank?
+      end
+    end
+
+    def contract_shipment_preferences_node(xml, options)
+      xml.public_send('preferences') do
+        xml.public_send('show-packing-instructions', options[:packing_instructions] || true)
+        xml.public_send('show-postage-rate', options[:show_postage_rate] || false)
+        xml.public_send('show-insured-value', true)
+      end
+    end
+
+    def contract_shipment_settlement_info_node(xml, options = {})
+      raise MissingCustomerNumberError unless options[:contract_id]
+      xml.public_send('settlement-info') do
+        contract_id_node(xml, options)
+        xml.public_send('intended-method-of-payment', 'Account')
+      end
+    end
+
+    def contract_shipment_parcel_node(xml, package, options = {})
+      weight = sanitize_weight_kg(package.kilograms.to_f)
+      xml.public_send('parcel-characteristics') do
+        xml.public_send('weight', "%#2.3f" % weight)
+        pkg_dim = package.cm
+        if pkg_dim && !pkg_dim.select { |x| x != 0 }.empty?
+          xml.public_send('dimensions') do
+            xml.public_send('length', '%.1f' % ((pkg_dim[2] * 10).round / 10.0)) if pkg_dim.size >= 3
+            xml.public_send('width', '%.1f' % ((pkg_dim[1] * 10).round / 10.0)) if pkg_dim.size >= 2
+            xml.public_send('height', '%.1f' % ((pkg_dim[0] * 10).round / 10.0)) if pkg_dim.size >= 1
+          end
+        end
+
+        xml.public_send('mailing-tube', package.tube?)
+        xml.public_send('unpackaged', package.unpackaged?)
+      end
+    end
+
+
+    def contract_shipment_customs_node(xml, destination, line_items, options)
+      return unless destination.country_code != 'CA'
+
+      xml.public_send('customs') do
+        currency = options[:currency] || "CAD"
+        xml.public_send('currency', currency)
+        xml.public_send('conversion-from-cad', options[:conversion_from_cad].to_s) if currency != 'CAD' && options[:conversion_from_cad]
+        xml.public_send('reason-for-export', 'SOG') # SOG - Sale of Goods
+        xml.public_send('other-reason', options[:customs_other_reason]) if options[:customs_reason_for_export] && options[:customs_other_reason]
+        xml.public_send('additional-customs-info', options[:customs_addition_info]) if options[:customs_addition_info]
+        xml.public_send('sku-list') do
+          line_items.each do |line_item|
+            kg = '%#2.3f' % [sanitize_weight_kg(line_item.kg)]
+            xml.public_send('item') do
+              xml.public_send('hs-tariff-code', line_item.hs_code) if line_item.hs_code && !line_item.hs_code.empty?
+              xml.public_send('sku', line_item.sku) if line_item.sku && !line_item.sku.empty?
+              xml.public_send('customs-description', line_item.name.slice(0, 44))
+              xml.public_send('unit-weight', kg)
+              xml.public_send('customs-value-per-unit', '%.2f' % sanitize_price_from_cents(line_item.value))
+              xml.public_send('customs-number-of-units', line_item.quantity)
+              xml.public_send('country-of-origin', line_item.options[:country_of_origin]) if line_item.options && line_item.options[:country_of_origin] && !line_item.options[:country_of_origin].empty?
+              xml.public_send('province-of-origin', line_item.options[:province_of_origin]) if line_item.options && line_item.options[:province_of_origin] && !line_item.options[:province_of_origin].empty?
+            end
+          end
+        end
+
+      end
     end
 
     def find_rates(origin, destination, line_items = [], options = {}, package = nil, services = [])

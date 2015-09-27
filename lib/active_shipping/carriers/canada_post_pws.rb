@@ -32,6 +32,7 @@ module ActiveShipping
 
     SHIPMENT_MIMETYPE = "application/vnd.cpc.ncshipment+xml"
     CONTRACT_SHIPMENT_MIMETYPE = "application/vnd.cpc.shipment-v7+xml"
+    MANIFEST_MIMETYPE = "application/vnd.cpc.manifest-v7+xml"
     RATE_MIMETYPE = "application/vnd.cpc.ship.rate+xml"
     TRACK_MIMETYPE = "application/vnd.cpc.track+xml"
     REGISTER_MIMETYPE = "application/vnd.cpc.registration+xml"
@@ -78,6 +79,59 @@ module ActiveShipping
       CPPWSContractShippingResponse.new(false, "Missing Customer Number", {}, :carrier => @@name)
     end
 
+    def get_contract_shipment(contract_shipping_response, options = {})
+      raise MissingShippingNumberError unless contract_shipping_response && contract_shipping_response.shipping_id
+      response = ssl_get(contract_shipping_response.self_url, headers(options, CONTRACT_SHIPMENT_MIMETYPE))
+      parse_contract_shipment_response(response)
+    rescue ActiveUtils::ResponseError, ActiveShipping::ResponseError => e
+      error_response(e.response.body, CPPWSContractShippingResponse)
+    end
+
+    def retrieve_contract_shipping_label(contract_shipping_response, options = {})
+      raise MissingShippingNumberError unless contract_shipping_response && contract_shipping_response.shipping_id
+      ssl_get(contract_shipping_response.label_url, headers(options, "application/pdf"))
+    rescue ActiveUtils::ResponseError, ActiveShipping::ResponseError => e
+      error_response(e.response.body, CPPWSContractShippingResponse)
+    end
+
+    def get_contract_shipment_groups(options = {})
+      raise MissingCustomerNumberError unless options[:customer_number]
+      response = ssl_get(get_contract_shipment_groups_url(options), headers(options, CONTRACT_SHIPMENT_MIMETYPE))
+      parse_contract_shipment_groups_response(response)
+    rescue ActiveUtils::ResponseError, ActiveShipping::ResponseError => e
+      error_response(e.response.body, CPPWSContractShippingResponse)
+    end
+
+    def void_contract_shipment(contract_shipping_response, options = {})
+      ssl_request(:delete, contract_shipping_response.self_url, nil, headers(options, CONTRACT_SHIPMENT_MIMETYPE))
+    rescue ActiveUtils::ResponseError, ActiveShipping::ResponseError => e
+      error_response(e.response.body, CPPWSVoidResponse)
+    end
+
+    def transmit_shipments(origin, groups, options = {})
+      request_body = build_transmit_shipments_request(origin, groups, options)
+      response = ssl_post(transmit_shipments_url(options), request_body, headers(options, MANIFEST_MIMETYPE, MANIFEST_MIMETYPE))
+      parse_transmit_shipments_response(response)
+    rescue ActiveUtils::ResponseError, ActiveShipping::ResponseError => e
+      error_response(e.response.body, CPPWSContractShippingResponse)
+    end
+
+    def get_manifest(transmit_shipments_response, options = {})
+      raise MissingManifestNumberError unless transmit_shipments_response && transmit_shipments_response.manifest_url
+      response = ssl_get(transmit_shipments_response.manifest_url, headers(options, MANIFEST_MIMETYPE))
+      parse_get_manifest_response(response)
+    rescue ActiveUtils::ResponseError, ActiveShipping::ResponseError => e
+     e.response
+    end
+
+    def build_contract_shipment_groups(groups)
+      groups.map do |group|
+        link        = group.at_xpath("link[@rel='group']")['href'],
+        group_id      = group.at('group-id').text
+        ShipmentGroup.new(link, group_id)
+      end
+    end
+
     def build_contract_shipment_request(origin, destination, package, line_items = [], options = {})
       origin = sanitize_location(origin)
       destination = sanitize_location(destination)
@@ -100,6 +154,37 @@ module ActiveShipping
             contract_references_node(xml, options)             # optional > user defined custom notes
             contract_shipment_customs_node(xml, destination, line_items, options)
             # COD Remittance defaults to sender
+          end
+        end
+      end
+      builder.to_xml
+    end
+
+    def build_transmit_shipments_request(origin, groups, options = {})
+
+      origin = sanitize_location(origin)
+
+      builder = Nokogiri::XML::Builder.new do |xml|
+        xml.public_send('transmit-set', :xmlns => "http://www.canadapost.ca/ws/manifest-v7") do
+          xml.public_send('group-ids') do
+            groups.each do |group|
+              xml.public_send('group-id', group)
+            end
+          end
+          xml.public_send('requested-shipping-point', origin.postal_code)
+          xml.public_send('cpc-pickup-indicator', true)
+          xml.public_send('detailed-manifests', true)
+          xml.public_send('method-of-payment', 'Account')
+          xml.public_send('manifest-address') do
+            xml.public_send('manifest-company', origin.company)
+            xml.public_send('manifest-name', origin.company)
+            xml.public_send('phone-number', origin.phone)
+            xml.public_send('address-details') do
+              xml.public_send('address-line-1', origin.address1)
+              xml.public_send('city', origin.city)
+              xml.public_send('prov-state', origin.province)
+              xml.public_send('postal-zip-code', origin.postal_code)
+            end
           end
         end
       end
@@ -143,7 +228,7 @@ module ActiveShipping
       # xml.public_send('references') do
       # end
     end
-    git
+
     def contract_shipment_options_node(xml, options)
       contract_shipping_options_node(xml, SHIPPING_OPTIONS, options)
     end
@@ -212,7 +297,7 @@ module ActiveShipping
     end
 
     def contract_shipment_settlement_info_node(xml, options = {})
-      raise MissingCustomerNumberError unless options[:contract_id]
+      raise MissingContractNumberError unless options[:contract_id]
       xml.public_send('settlement-info') do
         contract_id_node(xml, options)
         xml.public_send('intended-method-of-payment', 'Account')
@@ -265,6 +350,84 @@ module ActiveShipping
         end
 
       end
+    end
+
+    def create_contract_shipment_url(options)
+      raise MissingCustomerNumberError unless customer_number = options[:customer_number]
+      endpoint + "rs/#{customer_number}/#{customer_number}/shipment"
+    end
+
+    def get_contract_shipment_groups_url(options)
+      raise MissingCustomerNumberError unless customer_number = options[:customer_number]
+      endpoint + "rs/#{customer_number}/#{customer_number}/group"
+    end
+
+    def transmit_shipments_url(options)
+      raise MissingCustomerNumberError unless customer_number = options[:customer_number]
+      endpoint + "rs/#{customer_number}/#{customer_number}/manifest"
+    end
+
+
+    def parse_contract_shipment_response(response)
+      doc = Nokogiri.XML(response)
+      doc.remove_namespaces!
+      raise ActiveShipping::ResponseError, "No Shipping" unless doc.at('shipment-info')
+      options = {
+          :shipping_id      => doc.root.at('shipment-id').text,
+          :shipping_status     => doc.root.at('shipment-status').text,
+          :tracking_number  => doc.root.at('tracking-pin').text,
+          :self_url => doc.root.at_xpath("links/link[@rel='self']")['href'],
+          :details_url      => doc.root.at_xpath("links/link[@rel='details']")['href'],
+          :label_url        => doc.root.at_xpath("links/link[@rel='label']")['href'],
+          :group      => doc.root.at_xpath("links/link[@rel='group']")['href'],
+          :price      => doc.root.at_xpath("links/link[@rel='price']")['href'],
+      }
+      CPPWSContractShippingResponse.new(true, "", {}, options)
+    end
+
+    def parse_transmit_shipments_response(response)
+      doc = Nokogiri.XML(response)
+      doc.remove_namespaces!
+      raise ActiveShipping::ResponseError, "No Manifest" unless doc.at('manifests')
+
+      options = {
+          :manifest_url => doc.root.at_xpath("link[@rel='manifest']")['href'],
+      }
+
+      CPPWSTransmitShipmentsResponse.new(true, "", {}, options)
+    end
+
+    def parse_get_manifest_response(response)
+      doc = Nokogiri.XML(response)
+      doc.remove_namespaces!
+      raise ActiveShipping::ResponseError, "No Manifest" unless doc.at('manifest')
+
+      options = {
+          :po_number => doc.root.at('po-number').text,
+          :self_url => doc.root.at_xpath("links/link[@rel='self']")['href'],
+          :details_url => doc.root.at_xpath("links/link[@rel='details']")['href'],
+          :artifact => doc.root.at_xpath("links/link[@rel='artifact']")['href'],
+          :manifest_shipments => doc.root.at_xpath("links/link[@rel='manifestShipments']")['href']
+      }
+
+      CPPWSGetManifestResponse.new(true, "", {}, options)
+    end
+
+    def parse_contract_shipment_groups_response(response)
+      doc = Nokogiri.XML(response)
+      doc.remove_namespaces!
+      raise ActiveShipping::ResponseError, "No Groups" unless doc.at('groups')
+
+      groups = doc.root.xpath('group')
+
+
+      shipment_groups = build_contract_shipment_groups(groups)
+
+      options = {
+          :shipment_groups => shipment_groups
+      }
+
+      CPPWSContractShipmentGroupsResponse.new(true, "", {}, options)
     end
 
     def find_rates(origin, destination, line_items = [], options = {}, package = nil, services = [])
@@ -1017,6 +1180,15 @@ module ActiveShipping
     end
   end
 
+  class CPPWSVoidResponse < RateResponse
+    include CPPWSErrorResponse
+
+    def initialize(success, message, params = {}, options = {})
+      handle_error(message, options)
+      super
+    end
+  end
+
   class CPPWSTrackingResponse < TrackingResponse
     DELIVERED_EVENT_CODES = %w(1496 1498 1499 1409 1410 1411 1412 1413 1414 1415 1416 1417 1418 1419 1420 1421 1422 1423 1424 1425 1426 1427 1428 1429 1430 1431 1432 1433 1434 1435 1436 1437 1438)
     include CPPWSErrorResponse
@@ -1060,6 +1232,61 @@ module ActiveShipping
     end
   end
 
+  class CPPWSContractShippingResponse < ShippingResponse
+    include CPPWSErrorResponse
+    attr_reader :self_url, :label_url, :details_url, :group, :price, :shipment_status
+    def initialize(success, message, params = {}, options = {})
+      handle_error(message, options)
+      super
+      @self_url = options[:self_url]
+      @shipment_status = options[:shipping_status]
+      @label_url      = options[:label_url]
+      @details_url    = options[:details_url]
+      @group          = options[:group]
+      @price          = options[:price]
+    end
+  end
+
+  class CPPWSTransmitShipmentsResponse < Response
+    include CPPWSErrorResponse
+    attr_reader :manifest_url
+    def initialize(success, message, params = {}, options = {})
+      handle_error(message, options)
+      super
+      @manifest_url = options[:manifest_url]
+    end
+  end
+
+  class CPPWSGetManifestResponse < Response
+    include CPPWSErrorResponse
+    attr_reader :details_url, :self_url, :artifact, :manifest_shipments
+    def initialize(success, message, params = {}, options = {})
+      handle_error(message, options)
+      super
+      @self_url = options[:self_url]
+      @details_url = options[:details_url]
+      @artifact = options[:artifact]
+      @manifest_shipments = options[:manifest_shipments]
+    end
+  end
+
+  class CPPWSVoidContractShipmentResponse < Response
+    include CPPWSErrorResponse
+    def initialize(success, message, params = {}, options = {})
+      handle_error(message, options)
+      super
+    end
+  end
+
+  class CPPWSContractShipmentGroupsResponse < ContractShipmentGroupsResponse
+    include CPPWSErrorResponse
+
+    def initialize(success, message, params = {}, options = {})
+      handle_error(message, options)
+      super
+    end
+  end
+
   class CPPWSRegisterResponse < Response
     include CPPWSErrorResponse
     attr_reader :token_id
@@ -1090,6 +1317,8 @@ module ActiveShipping
 
   class InvalidPinFormatError < StandardError; end
   class MissingCustomerNumberError < StandardError; end
+  class MissingManifestNumberError < StandardError; end
+  class MissingContractNumberError < StandardError; end
   class MissingShippingNumberError < StandardError; end
   class MissingTokenIdError < StandardError; end
 end

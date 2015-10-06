@@ -32,6 +32,7 @@ module ActiveShipping
 
     SHIPMENT_MIMETYPE = "application/vnd.cpc.ncshipment+xml"
     CONTRACT_SHIPMENT_MIMETYPE = "application/vnd.cpc.shipment-v7+xml"
+    SHIPMENT_RETURN_MIMETYPE = "application/vnd.cpc.authreturn-v2+xml"
     MANIFEST_MIMETYPE = "application/vnd.cpc.manifest-v7+xml"
     RATE_MIMETYPE = "application/vnd.cpc.ship.rate+xml"
     TRACK_MIMETYPE = "application/vnd.cpc.track+xml"
@@ -68,6 +69,55 @@ module ActiveShipping
     ################################################
     #Contract shipping
     ################################################
+
+    def create_shipment_return(returner, receiver, package, options = {})
+      request_body = build_shipment_return(returner, receiver, package, options)
+      response = ssl_post(create_shipment_return_url(options), request_body, headers(options, SHIPMENT_RETURN_MIMETYPE, SHIPMENT_RETURN_MIMETYPE))
+      parse_shipment_return_response(response)
+    end
+
+    def build_shipment_return(returner, receiver, package, options = {})
+
+      builder = Nokogiri::XML::Builder.new do |xml|
+        xml.public_send('authorized-return', :xmlns => "http://www.canadapost.ca/ws/authreturn-v2") do
+          xml.public_send('service-code', options[:service_code])
+          shipment_return_returner_node(xml, returner, options)
+          shipment_return_receiver_node(xml, receiver, options)
+          contract_shipment_parcel_node(xml, package)
+          contract_shipment_print_preferences_node(xml, options)
+        end
+      end
+      builder.to_xml
+
+    end
+
+    def shipment_return_returner_node(xml, returner, options)
+      xml.public_send('returner') do
+        xml.public_send('name', returner.name)
+        xml.public_send('company', returner.company) if returner.company.present?
+        xml.public_send('domestic-address') do
+          xml.public_send('address-line-1', returner.address1)
+          xml.public_send('address-line-2', returner.address2_and_3) unless returner.address2_and_3.blank?
+          xml.public_send('city', returner.city)
+          xml.public_send('province', returner.province)
+          xml.public_send('postal-zip-code', returner.postal_code)
+        end
+      end
+    end
+
+    def shipment_return_receiver_node(xml, returner, options)
+      xml.public_send('returner') do
+        xml.public_send('name', returner.name)
+        xml.public_send('company', returner.company) if returner.company.present?
+        xml.public_send('domestic-address') do
+          xml.public_send('address-line-1', returner.address1)
+          xml.public_send('address-line-2', returner.address2_and_3) unless returner.address2_and_3.blank?
+          xml.public_send('city', returner.city)
+          xml.public_send('province', returner.province)
+          xml.public_send('postal-zip-code', returner.postal_code)
+        end
+      end
+    end
 
     def create_contract_shipment(origin, destination, package, line_items = [], options = {})
       request_body = build_contract_shipment_request(origin, destination, package, line_items, options)
@@ -357,6 +407,12 @@ module ActiveShipping
       endpoint + "rs/#{customer_number}/#{customer_number}/shipment"
     end
 
+    def create_shipment_return_url(options)
+      raise MissingCustomerNumberError unless customer_number = options[:customer_number]
+      endpoint + "rs/#{customer_number}/#{customer_number}/authorizedreturn"
+    end
+
+
     def get_contract_shipment_groups_url(options)
       raise MissingCustomerNumberError unless customer_number = options[:customer_number]
       endpoint + "rs/#{customer_number}/#{customer_number}/group"
@@ -383,6 +439,17 @@ module ActiveShipping
           :price      => doc.root.at_xpath("links/link[@rel='price']")['href'],
       }
       CPPWSContractShippingResponse.new(true, "", {}, options)
+    end
+
+    def parse_shipment_return_response(response)
+      doc = Nokogiri.XML(response)
+      doc.remove_namespaces!
+      raise ActiveShipping::ResponseError, "No Return" unless doc.at('authorized-return-info')
+      options = {
+          :tracking_number     => doc.root.at('tracking-pin').text,
+          :label_url        => doc.root.at_xpath("links/link[@rel='returnLabel']")['href'],
+      }
+      CPPWSShippingReturnResponse.new(true, "", {}, options)
     end
 
     def parse_transmit_shipments_response(response)
@@ -1244,6 +1311,17 @@ module ActiveShipping
       @details_url    = options[:details_url]
       @group          = options[:group]
       @price          = options[:price]
+    end
+  end
+
+  class CPPWSShippingReturnResponse < Response
+    include CPPWSErrorResponse
+    attr_reader :tracking_number, :label_url
+    def initialize(success, message, params = {}, options = {})
+      handle_error(message, options)
+      super
+      @label_url      = options[:label_url]
+      @tracking_number   = options[:tracking_pin]
     end
   end
 

@@ -80,7 +80,7 @@ module ActiveShipping
 
       builder = Nokogiri::XML::Builder.new do |xml|
         xml.public_send('authorized-return', :xmlns => "http://www.canadapost.ca/ws/authreturn-v2") do
-          xml.public_send('service-code', options[:service_code])
+          xml.public_send('service-code', options[:service])
           shipment_return_returner_node(xml, returner, options)
           shipment_return_receiver_node(xml, receiver, options)
           contract_shipment_parcel_node(xml, package)
@@ -100,13 +100,13 @@ module ActiveShipping
           xml.public_send('address-line-2', returner.address2_and_3) unless returner.address2_and_3.blank?
           xml.public_send('city', returner.city)
           xml.public_send('province', returner.province)
-          xml.public_send('postal-zip-code', returner.postal_code)
+          xml.public_send('postal-code', returner.postal_code)
         end
       end
     end
 
     def shipment_return_receiver_node(xml, returner, options)
-      xml.public_send('returner') do
+      xml.public_send('receiver') do
         xml.public_send('name', returner.name)
         xml.public_send('company', returner.company) if returner.company.present?
         xml.public_send('domestic-address') do
@@ -114,7 +114,7 @@ module ActiveShipping
           xml.public_send('address-line-2', returner.address2_and_3) unless returner.address2_and_3.blank?
           xml.public_send('city', returner.city)
           xml.public_send('province', returner.province)
-          xml.public_send('postal-zip-code', returner.postal_code)
+          xml.public_send('postal-code', returner.postal_code)
         end
       end
     end

@@ -205,6 +205,10 @@ module ActiveShipping
             contract_shipment_customs_node(xml, destination, line_items, options)
             # COD Remittance defaults to sender
           end
+          xml.public_send('return-spec') do
+            shipment_service_code_node(xml, options)
+            contract_shipment_return_recipient_node(xml, origin, options)
+          end
         end
       end
       builder.to_xml
@@ -268,6 +272,20 @@ module ActiveShipping
           xml.public_send('city', location.city)
           xml.public_send('prov-state', location.province) unless location.province.blank?
           xml.public_send('country-code', location.country_code)
+          xml.public_send('postal-zip-code', location.postal_code)
+        end
+      end
+    end
+
+    def contract_shipment_return_recipient_node(xml, location, options)
+      xml.public_send('return-recipient') do
+        xml.public_send('name', location.name)
+        xml.public_send('company', location.company) if location.company.present?
+        xml.public_send('address-details') do
+          xml.public_send('address-line-1', location.address1)
+          xml.public_send('address-line-2', location.address2_and_3) unless location.address2_and_3.blank?
+          xml.public_send('city', location.city)
+          xml.public_send('prov-state', location.province)
           xml.public_send('postal-zip-code', location.postal_code)
         end
       end
@@ -436,7 +454,9 @@ module ActiveShipping
           :details_url      => doc.root.at_xpath("links/link[@rel='details']")['href'],
           :label_url        => doc.root.at_xpath("links/link[@rel='label']")['href'],
           :group      => doc.root.at_xpath("links/link[@rel='group']")['href'],
+          :return_label_url      => doc.root.at_xpath("links/link[@rel='returnLabel']")['href'],
           :price      => doc.root.at_xpath("links/link[@rel='price']")['href'],
+
       }
       CPPWSContractShippingResponse.new(true, "", {}, options)
     end
@@ -1301,13 +1321,14 @@ module ActiveShipping
 
   class CPPWSContractShippingResponse < ShippingResponse
     include CPPWSErrorResponse
-    attr_reader :self_url, :label_url, :details_url, :group, :price, :shipment_status
+    attr_reader :self_url, :label_url, :details_url, :group, :price, :shipment_status, :return_label_url
     def initialize(success, message, params = {}, options = {})
       handle_error(message, options)
       super
       @self_url = options[:self_url]
       @shipment_status = options[:shipping_status]
       @label_url      = options[:label_url]
+      @return_label_url    = options[:return_label_url]
       @details_url    = options[:details_url]
       @group          = options[:group]
       @price          = options[:price]

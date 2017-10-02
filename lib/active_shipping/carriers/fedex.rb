@@ -134,6 +134,15 @@ module ActiveShipping
       'TR' => :transfer
     )
 
+    DEFAULT_LABEL_STOCK_TYPE = 'PAPER_7X4.75'
+
+    # Available return formats for image data when creating labels
+    LABEL_FORMATS = %w(DPL EPL2 PDF ZPLII PNG).freeze
+
+    TRANSIENT_TRACK_RESPONSE_CODES = %w(9035 9040 9041 9045 9050 9055 9060 9065 9070 9075 9085 9086 9090).freeze
+
+    UNRECOVERABLE_TRACK_RESPONSE_CODES = %w(9080 9081 9082 9095 9100).freeze
+
     def self.service_name_for_code(service_code)
       SERVICE_TYPES[service_code] || "FedEx #{service_code.titleize.sub(/Fedex /, '')}"
     end
@@ -143,7 +152,7 @@ module ActiveShipping
     end
 
     def find_rates(origin, destination, packages, options = {})
-      options = @options.update(options)
+      options = @options.merge(options)
       packages = Array(packages)
 
       rate_request = build_rate_request(origin, destination, packages, options)
@@ -154,7 +163,7 @@ module ActiveShipping
     end
 
     def find_tracking_info(tracking_number, options = {})
-      options = @options.update(options)
+      options = @options.merge(options)
 
       tracking_request = build_tracking_request(tracking_number, options)
       xml = commit(save_request(tracking_request), (options[:test] || false))
@@ -164,7 +173,7 @@ module ActiveShipping
 
     # Get Shipping labels
     def create_shipment(origin, destination, packages, options = {})
-      options = @options.update(options)
+      options = @options.merge(options)
       packages = Array(packages)
       raise Error, "Multiple packages are not supported yet." if packages.length > 1
 
@@ -217,8 +226,8 @@ module ActiveShipping
 
             xml.LabelSpecification do
               xml.LabelFormatType('COMMON2D')
-              xml.ImageType('PNG')
-              xml.LabelStockType('PAPER_7X4.75')
+              xml.ImageType(options[:label_format] || 'PNG')
+              xml.LabelStockType(options[:label_stock_type] || DEFAULT_LABEL_STOCK_TYPE)
             end
 
             xml.RateRequestTypes('ACCOUNT')
@@ -233,8 +242,8 @@ module ActiveShipping
                 # Reference Numbers
                 reference_numbers = Array(package.options[:reference_numbers])
                 if reference_numbers.size > 0
-                  xml.CustomerReferences do
-                    reference_numbers.each do |reference_number_info|
+                  reference_numbers.each do |reference_number_info|
+                    xml.CustomerReferences do
                       xml.CustomerReferenceType(reference_number_info[:type] || "CUSTOMER_REFERENCE")
                       xml.Value(reference_number_info[:value])
                     end
@@ -295,10 +304,14 @@ module ActiveShipping
           xml.ReturnTransitAndCommit(true)
 
           # Returns saturday delivery shipping options when available
-          xml.VariableOptions('SATURDAY_DELIVERY')
+          xml.VariableOptions('SATURDAY_DELIVERY') if options[:saturday_delivery]
 
           xml.RequestedShipment do
-            xml.ShipTimestamp(ship_timestamp(options[:turn_around_time]).iso8601(0))
+            if options[:pickup_date]
+              xml.ShipTimestamp(options[:pickup_date].to_time.iso8601(0))
+            else
+              xml.ShipTimestamp(ship_timestamp(options[:turn_around_time]).iso8601(0))
+            end
 
             freight = has_freight?(options)
 
@@ -470,32 +483,46 @@ module ActiveShipping
       message = response_message(xml)
 
       if success
+        missing_xml_field = false
         rate_estimates = xml.root.css('> RateReplyDetails').map do |rated_shipment|
-          service_code = rated_shipment.at('ServiceType').text
-          is_saturday_delivery = rated_shipment.at('AppliedOptions').try(:text) == 'SATURDAY_DELIVERY'
-          service_type = is_saturday_delivery ? "#{service_code}_SATURDAY_DELIVERY" : service_code
+          begin
+            service_code = rated_shipment.at('ServiceType').text
+            is_saturday_delivery = rated_shipment.at('AppliedOptions').try(:text) == 'SATURDAY_DELIVERY'
+            service_type = is_saturday_delivery ? "#{service_code}_SATURDAY_DELIVERY" : service_code
 
-          transit_time = rated_shipment.at('TransitTime').text if ["FEDEX_GROUND", "GROUND_HOME_DELIVERY"].include?(service_code)
-          max_transit_time = rated_shipment.at('MaximumTransitTime').try(:text) if service_code == "FEDEX_GROUND"
+            transit_time = rated_shipment.at('TransitTime').text if ["FEDEX_GROUND", "GROUND_HOME_DELIVERY"].include?(service_code)
+            max_transit_time = rated_shipment.at('MaximumTransitTime').try(:text) if service_code == "FEDEX_GROUND"
 
-          delivery_timestamp = rated_shipment.at('DeliveryTimestamp').try(:text)
+            delivery_timestamp = rated_shipment.at('DeliveryTimestamp').try(:text)
+            delivery_range = delivery_range_from(transit_time, max_transit_time, delivery_timestamp, (service_code == "GROUND_HOME_DELIVERY"), options)
 
-          delivery_range = delivery_range_from(transit_time, max_transit_time, delivery_timestamp, options)
+            currency = rated_shipment.at('RatedShipmentDetails/ShipmentRateDetail/TotalNetCharge/Currency').text
 
-          currency = rated_shipment.at('RatedShipmentDetails/ShipmentRateDetail/TotalNetCharge/Currency').text
-          RateEstimate.new(origin, destination, @@name,
-               self.class.service_name_for_code(service_type),
-               :service_code => service_code,
-               :total_price => rated_shipment.at('RatedShipmentDetails/ShipmentRateDetail/TotalNetCharge/Amount').text.to_f,
-               :currency => currency,
-               :packages => packages,
-               :delivery_range => delivery_range)
+            RateEstimate.new(origin, destination, @@name,
+                 self.class.service_name_for_code(service_type),
+                 :service_code => service_code,
+                 :total_price => rated_shipment.at('RatedShipmentDetails/ShipmentRateDetail/TotalNetCharge/Amount').text.to_f,
+                 :currency => currency,
+                 :packages => packages,
+                 :delivery_range => delivery_range)
+          rescue NoMethodError
+            missing_xml_field = true
+            nil
+          end
         end
+
+        rate_estimates = rate_estimates.compact
+        logger.warn("[FedexParseRateError] Some fields where missing in the response: #{response}") if logger && missing_xml_field
 
         if rate_estimates.empty?
           success = false
-          message = "No shipping rates could be found for the destination address" if message.blank?
+          if missing_xml_field
+            message = "The response from the carrier contained errors and could not be treated"
+          else
+            message = "No shipping rates could be found for the destination address" if message.blank?
+          end
         end
+
       else
         rate_estimates = []
       end
@@ -503,13 +530,15 @@ module ActiveShipping
       RateResponse.new(success, message, Hash.from_xml(response), :rates => rate_estimates, :xml => response, :request => last_request, :log_xml => options[:log_xml])
     end
 
-    def delivery_range_from(transit_time, max_transit_time, delivery_timestamp, options)
+    def delivery_range_from(transit_time, max_transit_time, delivery_timestamp, is_home_delivery, options)
       delivery_range = [delivery_timestamp, delivery_timestamp]
 
       # if there's no delivery timestamp but we do have a transit time, use it
       if delivery_timestamp.blank? && transit_time.present?
         transit_range  = parse_transit_times([transit_time, max_transit_time.presence || transit_time])
-        delivery_range = transit_range.map { |days| business_days_from(ship_date(options[:turn_around_time]), days) }
+        pickup_date = options[:pickup_date] || ship_date(options[:turn_around_time])
+
+        delivery_range = transit_range.map { |days| business_days_from(pickup_date, days, is_home_delivery) }
       end
 
       delivery_range
@@ -528,20 +557,30 @@ module ActiveShipping
       LabelResponse.new(success, message, response_info, {labels: labels})
     end
 
-    def business_days_from(date, days)
+    def business_days_from(date, days, is_home_delivery=false)
       future_date = date
       count       = 0
 
       while count < days
         future_date += 1.day
-        count += 1 if business_day?(future_date)
+        if is_home_delivery
+          count += 1 if home_delivery_business_day?(future_date)
+        else
+          count += 1 if business_day?(future_date)
+        end
       end
 
       future_date
     end
 
+    #Transit times for FedEx® Ground do not include Saturdays, Sundays, or holidays.
     def business_day?(date)
       (1..5).include?(date.wday)
+    end
+
+    #Transit times for FedEx® Home Delivery, do not include Sundays, Mondays, or holidays.
+    def home_delivery_business_day?(date)
+      (2..6).include?(date.wday)
     end
 
     def parse_tracking_response(response, options)
@@ -551,7 +590,12 @@ module ActiveShipping
       message = response_message(xml)
 
       if success
-        origin = nil
+        tracking_details_root = xml.at('CompletedTrackDetails')
+        success = response_success?(tracking_details_root)
+        message = response_message(tracking_details_root)
+      end
+
+      if success
         delivery_signature = nil
         shipment_events = []
 
@@ -560,17 +604,35 @@ module ActiveShipping
           when 1
             all_tracking_details.first
           when 0
-            raise ActiveShipping::Error, "The response did not contain tracking details"
+            message = "The response did not contain tracking details"
+            return TrackingResponse.new(
+              false,
+              message,
+              Hash.from_xml(response),
+              carrier: @@name,
+              xml: response,
+              request: last_request
+            )
           else
             all_unique_identifiers = xml.root.xpath('CompletedTrackDetails/TrackDetails/TrackingNumberUniqueIdentifier').map(&:text)
-            raise ActiveShipping::Error, "Multiple matches were found. Specify a unqiue identifier: #{all_unique_identifiers.join(', ')}"
+            message = "Multiple matches were found. Specify a unqiue identifier: #{all_unique_identifiers.join(', ')}"
+            return TrackingResponse.new(
+              false,
+              message,
+              Hash.from_xml(response),
+              carrier: @@name,
+              xml: response,
+              request: last_request
+            )
         end
 
-
         first_notification = tracking_details.at('Notification')
-        if first_notification.at('Severity').text == 'ERROR'
-          case first_notification.at('Code').text
-          when '9040'
+        severity = first_notification.at('Severity').text
+        if severity == 'ERROR' || severity == 'FAILURE'
+          message = first_notification.try(:text)
+          code = first_notification.at('Code').try(:text)
+          case code
+          when *TRANSIENT_TRACK_RESPONSE_CODES
             raise ActiveShipping::ShipmentNotFound, first_notification.at('Message').text
           else
             raise ActiveShipping::ResponseContentError, StandardError.new(first_notification.at('Message').text)
@@ -579,27 +641,24 @@ module ActiveShipping
 
         tracking_number = tracking_details.at('TrackingNumber').text
         status_detail = tracking_details.at('StatusDetail')
-        if status_detail.nil?
-          raise ActiveShipping::Error, "Tracking response does not contain status information"
+        if status_detail.blank?
+          status_code, status, status_description, delivery_signature = nil
+        else
+          status_code = status_detail.at('Code').try(:text)
+          status_description = status_detail.at('AncillaryDetails/ReasonDescription').try(:text) || status_detail.at('Description').try(:text)
+
+          status = TRACKING_STATUS_CODES[status_code]
+
+          if status_code == 'DL' && tracking_details.at('AvailableImages').try(:text) == 'SIGNATURE_PROOF_OF_DELIVERY'
+            delivery_signature = tracking_details.at('DeliverySignatureName').try(:text)
+          end
         end
 
-        status_code = status_detail.at('Code').try(:text)
-        if status_code.nil?
-          raise ActiveShipping::Error, "Tracking response does not contain status code"
-        end
-
-        status_description = (status_detail.at('AncillaryDetails/ReasonDescription') || status_detail.at('Description')).text
-        status = TRACKING_STATUS_CODES[status_code]
-
-        if status_code == 'DL' && tracking_details.at('AvailableImages').try(:text) == 'SIGNATURE_PROOF_OF_DELIVERY'
-          delivery_signature = tracking_details.at('DeliverySignatureName').text
-        end
-
-        if origin_node = tracking_details.at('OriginLocationAddress')
-          origin = Location.new(
-                :country =>     origin_node.at('CountryCode').text,
-                :province =>    origin_node.at('StateOrProvinceCode').text,
-                :city =>        origin_node.at('City').text
+        origin = if origin_node = tracking_details.at('OriginLocationAddress')
+          Location.new(
+            country: origin_node.at('CountryCode').text,
+            province: origin_node.at('StateOrProvinceCode').text,
+            city: origin_node.at('City').text
           )
         end
 
@@ -621,32 +680,36 @@ module ActiveShipping
 
           location = Location.new(:city => city, :state => state, :postal_code => zip_code, :country => country)
           description = event.at('EventDescription').text
+          type_code = event.at('EventType').text
 
           time          = Time.parse(event.at('Timestamp').text)
           zoneless_time = time.utc
 
-          shipment_events << ShipmentEvent.new(description, zoneless_time, location)
+          shipment_events << ShipmentEvent.new(description, zoneless_time, location, description, type_code)
         end
-        shipment_events = shipment_events.sort_by(&:time)
 
+        shipment_events = shipment_events.sort_by(&:time)
       end
 
-      TrackingResponse.new(success, message, Hash.from_xml(response),
-                           :carrier => @@name,
-                           :xml => response,
-                           :request => last_request,
-                           :status => status,
-                           :status_code => status_code,
-                           :status_description => status_description,
-                           :ship_time => ship_time,
-                           :scheduled_delivery_date => scheduled_delivery_time,
-                           :actual_delivery_date => actual_delivery_time,
-                           :delivery_signature => delivery_signature,
-                           :shipment_events => shipment_events,
-                           :shipper_address => (shipper_address.nil? || shipper_address.unknown?) ? nil : shipper_address,
-                           :origin => origin,
-                           :destination => destination,
-                           :tracking_number => tracking_number
+      TrackingResponse.new(
+        success,
+        message,
+        Hash.from_xml(response),
+        carrier: @@name,
+        xml: response,
+        request: last_request,
+        status: status,
+        status_code: status_code,
+        status_description: status_description,
+        ship_time: ship_time,
+        scheduled_delivery_date: scheduled_delivery_time,
+        actual_delivery_date: actual_delivery_time,
+        delivery_signature: delivery_signature,
+        shipment_events: shipment_events,
+        shipper_address: (shipper_address.nil? || shipper_address.unknown?) ? nil : shipper_address,
+        origin: origin,
+        destination: destination,
+        tracking_number: tracking_number
       )
     end
 
@@ -661,13 +724,13 @@ module ActiveShipping
     end
 
     def response_success?(document)
-      highest_severity = document.root.at('HighestSeverity')
+      highest_severity = document.at('HighestSeverity')
       return false if highest_severity.nil?
       %w(SUCCESS WARNING NOTE).include?(highest_severity.text)
     end
 
     def response_message(document)
-      notifications = document.root.at('Notifications')
+      notifications = document.at('Notifications')
       return "" if notifications.nil?
 
       "#{notifications.at('Severity').text} - #{notifications.at('Code').text}: #{notifications.at('Message').text}"

@@ -1,8 +1,9 @@
 require 'test_helper'
 
-class RemoteUPSTest < Minitest::Test
+class RemoteUPSTest < ActiveSupport::TestCase
   include ActiveShipping::Test::Credentials
   include ActiveShipping::Test::Fixtures
+  include HolidayHelpers
 
   def setup
     @options = credentials(:ups).merge(:test => true)
@@ -79,12 +80,12 @@ class RemoteUPSTest < Minitest::Test
     assert_equal 'UPS', rate.carrier
     assert_equal 'CAD', rate.currency
     if @options[:origin_account]
-      assert_instance_of Fixnum, rate.negotiated_rate
+      assert_kind_of Integer, rate.negotiated_rate
     else
       assert_equal rate.negotiated_rate, 0
     end
-    assert_instance_of Fixnum, rate.total_price
-    assert_instance_of Fixnum, rate.price
+    assert_kind_of Integer, rate.total_price
+    assert_kind_of Integer, rate.price
     assert_instance_of String, rate.service_name
     assert_instance_of String, rate.service_code
     assert_instance_of Array, rate.package_rates
@@ -267,6 +268,35 @@ class RemoteUPSTest < Minitest::Test
     assert_instance_of ActiveShipping::LabelResponse, response
   end
 
+  def test_obtain_international_shipping_label_with_bill_third_party
+    begin
+      bill_third_party_credentials = credentials(:ups_third_party_billing)
+    rescue NoCredentialsFound => e
+      skip(e.message)
+    end
+
+    response = @carrier.create_shipment(
+      location_fixtures[:new_york_with_name],
+      location_fixtures[:ottawa_with_name],
+      package_fixtures.values_at(:books),
+      {
+       :service_code => '07',
+       :bill_third_party => true,
+       :billing_account => bill_third_party_credentials[:account],
+       :billing_zip => bill_third_party_credentials[:zip],
+       :billing_country => bill_third_party_credentials[:country_code],
+       :test => true,
+      }
+    )
+    assert response.success?
+
+    # All behavior specific to how a LabelResponse behaves in the
+    # context of UPS label data is a matter for unit tests.  If
+    # the data changes substantially, the create_shipment
+    # ought to raise an exception and this test will fail.
+    assert_instance_of ActiveShipping::LabelResponse, response
+  end
+
   def test_delivery_date_estimates_within_zip
     today = Date.current
 
@@ -283,7 +313,26 @@ class RemoteUPSTest < Minitest::Test
     assert response.success?
     refute_empty response.delivery_estimates
     ground_delivery_estimate = response.delivery_estimates.select {|de| de.service_name == "UPS Ground"}.first
-    assert_equal Date.parse(1.business_days.from_now.to_s), ground_delivery_estimate.date
+    with_holidays(:ups) { assert_equal 1.business_days.after(today), ground_delivery_estimate.date }
+  end
+
+  def test_delivery_date_estimates_within_zip_with_no_value
+    today = Date.current
+
+    response = @carrier.get_delivery_date_estimates(
+      location_fixtures[:new_york_with_name],
+      location_fixtures[:new_york_with_name],
+      package_fixtures.values_at(:book),
+      today,
+      {
+        :test => true
+      }
+    )
+
+    assert response.success?
+    refute_empty response.delivery_estimates
+    ground_delivery_estimate = response.delivery_estimates.select {|de| de.service_name == "UPS Ground"}.first
+    with_holidays(:ups) { assert_equal 1.business_days.after(today), ground_delivery_estimate.date }
   end
 
   def test_delivery_date_estimates_across_zips
@@ -302,9 +351,11 @@ class RemoteUPSTest < Minitest::Test
     assert response.success?
     refute_empty response.delivery_estimates
     ground_delivery_estimate = response.delivery_estimates.select {|de| de.service_name == "UPS Ground"}.first
-    assert_equal Date.parse(3.business_days.from_now.to_s), ground_delivery_estimate.date
-    next_day_delivery_estimate = response.delivery_estimates.select {|de| de.service_name == "UPS Next Day Air"}.first
-    assert_equal Date.parse(1.business_days.from_now.to_s), next_day_delivery_estimate.date
+    with_holidays(:ups) do
+      assert_equal 3.business_days.after(today), ground_delivery_estimate.date
+      next_day_delivery_estimate = response.delivery_estimates.select {|de| de.service_name == "UPS Next Day Air"}.first
+      assert_equal 1.business_days.after(today), next_day_delivery_estimate.date
+    end
   end
 
   def test_rate_with_single_service
@@ -325,6 +376,7 @@ class RemoteUPSTest < Minitest::Test
 
   def test_delivery_date_estimates_intl
     today = Date.current
+
     response = @carrier.get_delivery_date_estimates(
       location_fixtures[:new_york_with_name],
       location_fixtures[:ottawa_with_name],
@@ -338,7 +390,7 @@ class RemoteUPSTest < Minitest::Test
     assert response.success?
     refute_empty response.delivery_estimates
     ww_express_estimate = response.delivery_estimates.select {|de| de.service_name == "UPS Worldwide Express"}.first
-    assert_equal Date.parse(1.day.from_now.to_s), ww_express_estimate.date
+    with_holidays(:ups) { assert_equal 1.business_days.after(today), ww_express_estimate.date }
   end
 
   def test_void_shipment
@@ -358,5 +410,97 @@ class RemoteUPSTest < Minitest::Test
 
   def test_maximum_address_field_length
     assert_equal 35, @carrier.maximum_address_field_length
+  end
+
+  def test_obtain_return_label
+    response = @carrier.create_shipment(
+      location_fixtures[:beverly_hills_with_name],
+      location_fixtures[:real_google_as_commercial],
+      #package descriptions are required for returns
+      package_fixtures.values_at(:books),
+      {
+        :shipper => location_fixtures[:new_york],
+        :return_service_code => '9',
+        :test => true
+      }
+    )
+
+    assert response.success?
+
+    assert_instance_of ActiveShipping::LabelResponse, response
+  end
+
+  def test_obtain_international_return_label
+    response = @carrier.create_shipment(
+      location_fixtures[:ottawa_with_name],
+      #international return requires destination to have: phone number, name
+      location_fixtures[:real_google_with_name_phone],
+      #package descriptions are required for returns
+      package_fixtures.values_at(:books),
+      {
+        #international return requires shipper to have: phone, name
+        :shipper => location_fixtures[:new_york_with_name],
+        :service_code => '07',
+        :return_service_code => '9',
+        :test => true,
+      }
+    )
+
+    assert response.success?
+
+    assert_instance_of ActiveShipping::LabelResponse, response
+  end
+
+  def test_obtain_shipping_label_zpl_format
+    response = @carrier.create_shipment(
+      location_fixtures[:beverly_hills],
+      location_fixtures[:new_york_with_name],
+      package_fixtures.values_at(:american_wii),
+      :label_format => "ZPL",
+      :test => true
+    )
+
+    assert response.success?
+    assert_instance_of ActiveShipping::LabelResponse, response
+    assert_equal "ZPL", response.params['ShipmentResults']['PackageResults']['LabelImage']['LabelImageFormat']['Code']
+  end
+
+  def test_obtain_shipping_label_defaults_to_gif_format
+    response = @carrier.create_shipment(
+      location_fixtures[:beverly_hills],
+      location_fixtures[:new_york_with_name],
+      package_fixtures.values_at(:american_wii),
+      :label_format => nil,
+      :test => true
+    )
+
+    assert response.success?
+    assert_instance_of ActiveShipping::LabelResponse, response
+    assert_equal "GIF", response.params['ShipmentResults']['PackageResults']['LabelImage']['LabelImageFormat']['Code']
+  end
+
+  def test_create_shipment_with_dry_ice_options
+    response = @carrier.create_shipment(
+      location_fixtures[:beverly_hills_with_name],
+      location_fixtures[:new_york_with_name],
+      package_fixtures.values_at(:frozen_stuff),
+      :service_code => '01',
+      :test => true
+    )
+
+    assert response.success?
+    assert_instance_of ActiveShipping::LabelResponse, response
+  end
+
+  def test_create_shipment_with_insured_value
+    response = @carrier.create_shipment(
+      location_fixtures[:beverly_hills_with_name],
+      location_fixtures[:new_york_with_name],
+      package_fixtures.values_at(:insured_value),
+      :test => true
+    )
+
+    assert response.success?
+    assert_instance_of ActiveShipping::LabelResponse, response
   end
 end

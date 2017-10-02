@@ -1,6 +1,7 @@
 require 'bundler/setup'
 
 require 'minitest/autorun'
+require "minitest/reporters"
 require 'mocha/mini_test'
 require 'timecop'
 require 'business_time'
@@ -8,16 +9,26 @@ require 'business_time'
 require 'active_shipping'
 require 'logger'
 require 'erb'
+require 'pry'
+require 'vcr'
+require 'webmock/minitest'
 
-# This makes sure that Minitest::Test exists when an older version of Minitest
-# (i.e. 4.x) is required by ActiveSupport.
-unless defined?(Minitest::Test)
-  Minitest::Test = MiniTest::Unit::TestCase
+require_relative 'helpers/holiday_helpers.rb'
+
+Minitest::Reporters.use! Minitest::Reporters::ProgressReporter.new(detailed_skip: !!ENV["CI"])
+
+VCR.configure do |config|
+  config.cassette_library_dir = 'test/remote/vcr_cassettes'
+  config.allow_http_connections_when_no_cassette = true
+  config.hook_into :webmock
 end
 
-
-class Minitest::Test
+class ActiveSupport::TestCase
   include ActiveShipping
+
+  def logger
+    @logger ||= Logger.new(STDERR)
+  end
 end
 
 module ActiveShipping::Test
@@ -85,7 +96,9 @@ module ActiveShipping::Test
         :small_half_pound => Package.new(8, [1, 1, 1], :units => :imperial),
         :big_half_pound => Package.new((16 * 50), [24, 24, 36], :units => :imperial),
         :chocolate_stuff => Package.new(80, [2, 6, 12], :units => :imperial),
+        :frozen_stuff => Package.new(80, [2, 6, 12], :units => :imperial, :dry_ice => {weight: 1.4}),
         :declared_value => Package.new(80, [2, 6, 12], :units => :imperial, :currency => 'USD', :value => 999.99),
+        :insured_value => Package.new(80, [2, 6, 12], :units => :imperial, :currency => 'USD', :insured_value => 999.99),
         :tshirts => Package.new(10 * 16, nil, :units => :imperial),
         :shipping_container => Package.new(2200000, [2440, 2600, 6058], :description => '20 ft Standard Container', :units => :metric),
         :largest_gold_bar => Package.new(250000, [45.5, 22.5, 17], :value => 15300000),
@@ -103,7 +116,8 @@ module ActiveShipping::Test
                                  :address1 => '110 Laurier Avenue West',
                                  :postal_code => 'K1P 1J1',
                                  :phone => '1-613-580-2400',
-                                 :fax => '1-613-580-2495'),
+                                 :fax => '1-613-580-2495',
+                                 :email => 'bob.bobsen@gmail.com'),
         :ottawa_with_name => Location.new( :country => 'CA',
                                            :province => 'ON',
                                            :city => 'Ottawa',
@@ -131,6 +145,15 @@ module ActiveShipping::Test
                                       :zip => '90210',
                                       :phone => '1-310-285-1013',
                                       :fax => '1-310-275-8159'),
+        :beverly_hills_9_zip => Location.new(
+                                      :country => 'US',
+                                      :state => 'CA',
+                                      :city => 'Beverly Hills',
+                                      :address1 => '455 N. Rexford Dr.',
+                                      :address2 => '3rd Floor',
+                                      :zip => '90210-1234',
+                                      :phone => '1-310-285-1013',
+                                      :fax => '1-310-275-8159'),
         :real_home_as_commercial => Location.new(
                                       :country => 'US',
                                       :city => 'Tampa',
@@ -151,6 +174,15 @@ module ActiveShipping::Test
                                       :state => 'CA',
                                       :address1 => '1600 Amphitheatre Parkway',
                                       :zip => '94043',
+                                      :address_type => 'commercial'),
+        :real_google_with_name_phone => Location.new(
+                                      :name => 'Sergey Brin',
+                                      :country => 'US',
+                                      :city => 'Mountain View',
+                                      :state => 'CA',
+                                      :address1 => '1600 Amphitheatre Parkway',
+                                      :zip => '94043',
+                                      :phone => '1-650-253-0000',
                                       :address_type => 'commercial'),
         :real_google_as_residential => Location.new(
                                       :country => 'US',
@@ -234,8 +266,26 @@ module ActiveShipping::Test
                                       :city => 'Groningen',
                                       :address1 => 'Aquamarijnstraat 349',
                                       :postal_code => '9743 PJ',
-                                      :state => 'Groningen')
+                                      :state => 'Groningen'),
+        :sydney => Location.new(
+                                      :country => 'AUS',
+                                      :city => 'Sydney',
+                                      :state => 'NSW',
+                                      :address1 => '192 George Street',
+                                      :postal_code => '2000'),
+        :melbourne => Location.new(
+                                      :country => 'AUS',
+                                      :city => 'Melbourne',
+                                      :state => 'VIC',
+                                      :address1 => '192 George Street',
+                                      :postal_code => '3108'),
+        :kosovo => Location.new(
+                                      :country => 'XK',
+                                      :city => 'Prishtinë',
+                                      :address1 => 'Ahmet Krasniqi',
+                                      :postal_code => '10000')
       }
+
     end
 
     def line_item_fixture

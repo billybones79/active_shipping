@@ -1,6 +1,6 @@
 require 'test_helper'
 
-class RemoteUSPSTest < Minitest::Test
+class RemoteUSPSTest < ActiveSupport::TestCase
   include ActiveShipping::Test::Credentials
   include ActiveShipping::Test::Fixtures
 
@@ -11,12 +11,13 @@ class RemoteUSPSTest < Minitest::Test
     skip(e.message)
   end
 
-  def test_tracking
-    response = @carrier.find_tracking_info('LN284529912US', test: false)
+   def test_tracking_with_attempted_delivery
+    response = @carrier.find_tracking_info('LZ117228611US', test: false)
     assert response.success?, response.message
-    assert_equal 9,response.shipment_events.size
+    assert_equal 15,response.shipment_events.size
     assert_equal 'DELIVERED', response.shipment_events.last.message
-    assert_equal Time.parse('2015-06-01 13:36:00 UTC'), response.actual_delivery_date
+    assert_equal Time.parse('2017-03-31 11:37:00 UTC'), response.attempted_delivery_date
+    assert_equal Time.parse('2017-04-03 14:05:00 UTC'), response.actual_delivery_date
   end
 
   def test_tracking_with_bad_number
@@ -75,8 +76,8 @@ class RemoteUSPSTest < Minitest::Test
     rate = response.rates.first
     assert_equal 'USPS', rate.carrier
     assert_equal 'USD', rate.currency
-    assert_instance_of Fixnum, rate.total_price
-    assert_instance_of Fixnum, rate.price
+    assert_kind_of Integer, rate.total_price
+    assert_kind_of Integer, rate.price
     assert_instance_of String, rate.service_name
     assert_instance_of String, rate.service_code
     assert_instance_of Array, rate.package_rates
@@ -108,8 +109,8 @@ class RemoteUSPSTest < Minitest::Test
     rate = response.rates.first
     assert_equal 'USPS', rate.carrier
     assert_equal 'USD', rate.currency
-    assert_instance_of Fixnum, rate.total_price
-    assert_instance_of Fixnum, rate.price
+    assert_kind_of Integer, rate.total_price
+    assert_kind_of Integer, rate.price
     assert_instance_of String, rate.service_name
     assert_instance_of String, rate.service_code
     assert_instance_of Array, rate.package_rates

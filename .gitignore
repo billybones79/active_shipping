@@ -10,6 +10,6 @@ test/fixtures/live_credentials.yml
 .rbenv-version
 .yardoc/
 doc/
-
-.bundle/
-.idea/
+.idea
+.bundle
+.byebug_history

@@ -1,5 +1,88 @@
 # ActiveShipping CHANGELOG
 
+### v2.1.1
+- Update README to clarify Shopify's involvement moving forward with v2.x
+
+### v2.1.0
+- Add email field to Location
+
+### v2.0.0
+- Drop support for < ruby 2.2, support ruby 2.4
+- Drop support for < Rails 4.2.
+- BREAKING CHANGE: Use shopify/measured instead of shopify/quantified for dimensions and units.
+
+### v1.14.2
+- Make saturday delivery an option for fedex
+
+### v1.14.1
+- Fix parsing of CanadaPostPWS service options response.
+
+### v1.14.0
+- Update Correios default services list.
+- Fix CanadaPostPWS from generating an empty options tag.
+- Allow contract-number on CanadaPost merchant detail's response to be nil.
+- Fix a flakey UPS remote test that would fail only on Fridays.
+
+### v1.13.4
+- Upcase postal code for CanadaPostPWS
+- Fix failing USPS test
+- add .byebug_history to .gitignore
+
+### v1.13.3
+- CanadaPostPWS no longer modifies locations passed to it
+
+### v1.13.2
+- Bump active_utils to 3.3.1
+- Allow activesupport <5.2.0
+
+### v1.13.1
+- Fix up UPS tracker parsing for Kosovo (KV)
+
+### v1.13.0
+- Add default location for CanadaPost PWS
+- Patch UPS to use old Kosovo country code
+- Add option to not include tax in rates for CP PWS
+
+### v1.12.1
+- Explicitly set ssl_version for USPS
+- Strip 9 digit origin zip code for USPS world rate requests
+
+### v1.12.0
+- Update active_utils dependency to v3.3.0
+
+### v1.8.6
+- Fix UPS TrackResponse with no status code
+- Stop FedEx from raising for successful responses with no statuses
+- Raise appropriate exception response for FedEx errors
+
+### v1.8.5
+- Fix UPS TrackResponse parsing for missing elements
+
+### v1.8.4
+- Add price details to rate estimates
+- Fix encoding for UPS responses
+
+### v1.8.3
+- Add description field to rate estimates
+
+### v1.8.2
+- Add option for FedEx label format
+- Fix kunaki remote tests broken due to more shipping options
+
+### v1.6.1
+- Fix FedEx ShipmentEvents to include event type
+- Skip broken Canada Post remote tests
+
+### v1.6.0
+- Update active_utils dependency to v3.2.0
+
+### v1.5.0
+- Fix Kunaki remote test
+- Fix credentials for Canada Post PWS remote tests
+- Add compare price to rate estimate options
+- Add phone required to rate estimate options
+- Update active_utils dependency to v3.1.0
+
 ### v1.4.3
 
 - Fix UPS SurePost for < 1 pound packages

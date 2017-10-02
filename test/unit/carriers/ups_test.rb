@@ -1,6 +1,6 @@
 require 'test_helper'
 
-class UPSTest < Minitest::Test
+class UPSTest < ActiveSupport::TestCase
   include ActiveShipping::Test::Fixtures
 
   def setup
@@ -128,6 +128,19 @@ class UPSTest < Minitest::Test
                   "DELIVERED"], response.shipment_events.map(&:name)
   end
 
+  def test_find_tracking_info_should_have_messages_for_shipment_events
+    @carrier.expects(:commit).returns(@tracking_response)
+    response = @carrier.find_tracking_info('1Z5FX0076803466397')
+    assert_equal ["BILLING INFORMATION RECEIVED",
+                  "IMPORT SCAN",
+                  "LOCATION SCAN",
+                  "LOCATION SCAN",
+                  "DEPARTURE SCAN",
+                  "ARRIVAL SCAN",
+                  "OUT FOR DELIVERY",
+                  "DELIVERED"], response.shipment_events.map(&:message)
+  end
+
   def test_find_tracking_info_should_have_correct_type_codes_for_shipment_events
     @carrier.expects(:commit).returns(@tracking_response)
     response = @carrier.find_tracking_info('1Z5FX0076803466397')
@@ -153,6 +166,37 @@ class UPSTest < Minitest::Test
     assert_equal Time.parse('2015-01-29 00:00:00 UTC'), response.scheduled_delivery_date
   end
 
+  def test_find_tracking_info_should_handle_no_status_node
+    @carrier.expects(:commit).returns(xml_fixture('ups/no_status_node_success'))
+    response = @carrier.find_tracking_info('1Z5FX0076803466397')
+    assert_equal 'Success', response.params.fetch("Response").fetch("ResponseStatusDescription")
+    assert_empty response.shipment_events
+  end
+
+  def test_location_from_address_node_kosovo_kv
+    address = Nokogiri::XML::DocumentFragment.parse(xml_fixture('ups/location_node_kosovo_kv'))
+
+    parsed = @carrier.send(:location_from_address_node, address)
+    assert_equal 'XK', parsed.country_code
+    assert_equal 'Kosovo', parsed.country.name
+  end
+
+  def test_location_from_address_node_kosovo_xk
+    address = Nokogiri::XML::DocumentFragment.parse(xml_fixture('ups/location_node_kosovo_xk'))
+
+    parsed = @carrier.send(:location_from_address_node, address)
+    assert_equal 'XK', parsed.country_code
+    assert_equal 'Kosovo', parsed.country.name
+  end
+
+  def test_location_from_address_node_zz
+    address = Nokogiri::XML::DocumentFragment.parse(xml_fixture('ups/location_node_zz'))
+
+    parsed = @carrier.send(:location_from_address_node, address)
+    assert_equal 'US', parsed.country_code
+    assert_equal 'United States', parsed.country.name
+  end
+
   def test_response_parsing_an_oversize_package
     mock_response = xml_fixture('ups/package_exceeds_maximum_length')
     @carrier.expects(:commit).returns(mock_response)
@@ -164,6 +208,38 @@ class UPSTest < Minitest::Test
     end
 
     assert_equal "Failure: Package exceeds the maximum length constraint of 108 inches. Length is the longest side of a package.", e.message
+  end
+
+  def test_handles_no_shipment_warning_messages
+    mock_response = xml_fixture('ups/no_shipment_warnings')
+    @carrier.expects(:commit).returns(mock_response)
+    response = @carrier.find_rates(location_fixtures[:beverly_hills],
+                        location_fixtures[:real_home_as_residential],
+                        package_fixtures.values_at(:chocolate_stuff))
+    rate = response.rates.first
+    assert_equal [], rate.messages
+  end
+
+  def test_handles_warning_messages
+    mock_response = xml_fixture('ups/no_negotiated_rates')
+    @carrier.expects(:commit).returns(mock_response)
+    response = @carrier.find_rates(location_fixtures[:beverly_hills],
+                        location_fixtures[:real_home_as_residential],
+                        package_fixtures.values_at(:chocolate_stuff))
+    rate = response.rates.first
+    expected_messages = [
+      "User Id and Shipper Number combination is not qualified to receive negotiated rates.",
+      "Your invoice may vary from the displayed reference rates",
+      "Ship To Address Classification is changed from Residential to Commercial"
+    ]
+    assert_equal expected_messages, rate.messages
+  end
+
+  def test_response_parsing_an_undecoded_character
+    unencoded_response = @tracking_response.gsub('NAPERVILLE', "N\xc4PERVILLE")
+    @carrier.stubs(:ssl_post).returns(unencoded_response)
+    response = @carrier.find_tracking_info('1Z5FX0076803466397')
+    assert_equal 'NÄPERVILLE', response.shipment_events.first.location.city
   end
 
   def test_response_parsing_an_unknown_error
@@ -229,17 +305,18 @@ class UPSTest < Minitest::Test
   def test_delivery_range_takes_weekend_into_consideration
     mock_response = xml_fixture('ups/test_real_home_as_residential_destination_response')
     @carrier.expects(:commit).returns(mock_response)
-    Timecop.freeze(DateTime.new(2012, 6, 15))
-    response = @carrier.find_rates( location_fixtures[:beverly_hills],
-                                    location_fixtures[:real_home_as_residential],
-                                    package_fixtures.values_at(:chocolate_stuff))
 
-    date_test = [nil, 3, 2, 1, 1, 1].map do |days|
-      DateTime.now.utc + days + 2 if days
+    Timecop.freeze(DateTime.new(2012, 6, 15)) do
+      response = @carrier.find_rates( location_fixtures[:beverly_hills],
+                                      location_fixtures[:real_home_as_residential],
+                                      package_fixtures.values_at(:chocolate_stuff))
+
+      date_test = [nil, 3, 2, 1, 1, 1].map do |days|
+        DateTime.now.utc + (days + 2).days if days
+      end
+
+      assert_equal date_test, response.rates.map(&:delivery_date)
     end
-    Timecop.return
-
-    assert_equal date_test, response.rates.map(&:delivery_date)
   end
 
   def test_maximum_weight
@@ -352,9 +429,9 @@ class UPSTest < Minitest::Test
                                            :billing_zip => expected_postal_code_number,
                                            :billing_country => expected_country_code)
 
-    assert_equal expected_account_number, response.search('ShipmentConfirmRequest/Shipment/PaymentInformation/BillThirdParty/BillThirdPartyShipper/AccountNumber').text
-    assert_equal expected_postal_code_number, response.search('/ShipmentConfirmRequest/Shipment/PaymentInformation/BillThirdParty/BillThirdPartyShipper/ThirdParty/Address/PostalCode').text
-    assert_equal expected_country_code, response.search('/ShipmentConfirmRequest/Shipment/PaymentInformation/BillThirdParty/BillThirdPartyShipper/ThirdParty/Address/CountryCode').text
+    assert_equal expected_account_number, response.search('ShipmentConfirmRequest/Shipment/ItemizedPaymentInformation/ShipmentCharge/BillThirdParty/BillThirdPartyShipper/AccountNumber').text
+    assert_equal expected_postal_code_number, response.search('/ShipmentConfirmRequest/Shipment/ItemizedPaymentInformation/ShipmentCharge/BillThirdParty/BillThirdPartyShipper/ThirdParty/Address/PostalCode').text
+    assert_equal expected_country_code, response.search('/ShipmentConfirmRequest/Shipment/ItemizedPaymentInformation/ShipmentCharge/BillThirdParty/BillThirdPartyShipper/ThirdParty/Address/CountryCode').text
   end
 
   def test_label_request_negotiated_rates_presence
@@ -364,7 +441,8 @@ class UPSTest < Minitest::Test
                                            package_fixtures.values_at(:chocolate_stuff),
                                            :test => true,
                                            :saturday_delivery => true,
-                                           :origin_account => 'A01B23' # without this option, a negotiated rate will not be requested
+                                           :origin_account => 'A01B23', # without this option, a negotiated rate will not be requested
+                                           :negotiated_rates => true,
                              )
 
     negotiated_rates = response.search '/ShipmentConfirmRequest/Shipment/RateInformation/NegotiatedRatesIndicator'
@@ -512,7 +590,7 @@ class UPSTest < Minitest::Test
     )
 
     response.delivery_estimates.each do |delivery_estimate|
-      assert delivery_estimate.service_name, UPS::DEFAULT_SERVICES[delivery_estimate.service_code]
+      assert_equal delivery_estimate.service_code, UPS::DEFAULT_SERVICE_NAME_TO_CODE[delivery_estimate.service_name]
     end
   end
 
@@ -573,5 +651,76 @@ class UPSTest < Minitest::Test
     request = Nokogiri::XML(xml_builder.to_xml)
     assert_equal 'OZS', request.search('/Package/PackageWeight/UnitOfMeasurement/Code').text
     assert_equal '8.0', request.search('/Package/PackageWeight/Weight').text
+  end
+
+  def test_address_validation
+    location = Location.new(address1: "55 Glenlake Parkway", city: "Atlanta", state: "GA", zip: "30328", country: "US")
+    address_validation_response = xml_fixture('ups/address_validation_response')
+    @carrier.expects(:commit).returns(address_validation_response)
+    response = @carrier.validate_address(location)
+    assert_equal :commercial, response.classification
+    assert_equal true, response.address_match?
+  end
+
+  def test_address_validation_ambiguous
+    location = Location.new(address1: "55 Glen", city: "Atlanta", state: "GA", zip: "30328", country: "US")
+    address_validation_response = xml_fixture('ups/address_validation_response_ambiguous')
+    @carrier.expects(:commit).returns(address_validation_response)
+    response = @carrier.validate_address(location)
+    assert_equal false, response.address_match?
+    assert_equal :ambiguous, response.validity
+  end
+
+  def test_address_validation_no_candidates
+    location = Location.new(address1: "55 Glenblagahrhadd", city: "Atlanta", state: "GA", zip: "30321", country: "US")
+    address_validation_response = xml_fixture('ups/address_validation_response_no_candidates')
+    @carrier.expects(:commit).returns(address_validation_response)
+    response = @carrier.validate_address(location)
+    assert_equal false, response.address_match?
+    assert_equal :invalid, response.validity
+  end
+
+  def test_kosovo_location_node
+    xml_builder = Nokogiri::XML::Builder.new do |xml|
+      @carrier.send(:build_location_node,
+                    xml,
+                    "KosovoRequest",
+                    location_fixtures[:kosovo],
+                    {}
+      )
+    end
+    request = Nokogiri::XML(xml_builder.to_xml)
+    assert_equal 'KV', request.search('/KosovoRequest/Address/CountryCode').text
+  end
+
+  def test_kosovo_build_address_artifact_format_location
+    xml_builder = Nokogiri::XML::Builder.new do |xml|
+      @carrier.send(:build_address_artifact_format_location,
+                    xml,
+                    "KosovoRequest",
+                    location_fixtures[:kosovo]
+      )
+    end
+    request = Nokogiri::XML(xml_builder.to_xml)
+    assert_equal 'KV', request.search('/KosovoRequest/AddressArtifactFormat/CountryCode').text
+  end
+
+  def test_kosovo_build_address_validation_request
+    xml = @carrier.send(:build_address_validation_request, location_fixtures[:kosovo])
+    request = Nokogiri::XML(xml)
+    assert_equal 'KV', request.search('/AddressValidationRequest/AddressKeyFormat/CountryCode').text
+  end
+
+  def test_kosovo_build_billing_info_node
+    options = {bill_third_party: true, bill_to_consignee: true, billing_account: 12345,
+               billing_zip: 12345, billing_country: 'XK'}
+    xml_builder = Nokogiri::XML::Builder.new do |xml|
+      @carrier.send(:build_billing_info_node,
+                    xml,
+                    options
+      )
+    end
+    request = Nokogiri::XML(xml_builder.to_xml)
+    assert_equal 'KV', request.search('/BillThirdParty/BillThirdPartyConsignee/ThirdParty/Address/CountryCode').text
   end
 end

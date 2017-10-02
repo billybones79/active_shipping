@@ -1,6 +1,6 @@
 require 'test_helper'
 
-class RemoteFedExTest < Minitest::Test
+class RemoteFedExTest < ActiveSupport::TestCase
   include ActiveShipping::Test::Credentials
   include ActiveShipping::Test::Fixtures
 
@@ -33,7 +33,7 @@ class RemoteFedExTest < Minitest::Test
     assert response.rates.length > 0
     response.rates.each do |rate|
       assert_instance_of String, rate.service_name
-      assert_instance_of Fixnum, rate.price
+      assert_kind_of Integer, rate.price
     end
   end
 
@@ -75,7 +75,7 @@ class RemoteFedExTest < Minitest::Test
     assert response.rates.length > 0
     response.rates.each do |rate|
       assert_instance_of String, rate.service_name
-      assert_instance_of Fixnum, rate.price
+      assert_kind_of Integer, rate.price
     end
   end
 
@@ -134,7 +134,7 @@ class RemoteFedExTest < Minitest::Test
     assert response.rates.length > 0
     response.rates.each do |rate|
       assert_instance_of String, rate.service_name
-      assert_instance_of Fixnum, rate.price
+      assert_kind_of Integer, rate.price
     end
   end
 
@@ -149,7 +149,7 @@ class RemoteFedExTest < Minitest::Test
     assert response.rates.length > 0
     response.rates.each do |rate|
       assert_instance_of String, rate.service_name
-      assert_instance_of Fixnum, rate.price
+      assert_kind_of Integer, rate.price
     end
   end
 
@@ -164,7 +164,7 @@ class RemoteFedExTest < Minitest::Test
     assert response.rates.length > 0
     response.rates.each do |rate|
       assert_instance_of String, rate.service_name
-      assert_instance_of Fixnum, rate.price
+      assert_kind_of Integer, rate.price
     end
   end
 
@@ -179,7 +179,7 @@ class RemoteFedExTest < Minitest::Test
     assert response.rates.length > 0
     response.rates.each do |rate|
       assert_instance_of String, rate.service_name
-      assert_instance_of Fixnum, rate.price
+      assert_kind_of Integer, rate.price
     end
   end
 
@@ -194,7 +194,7 @@ class RemoteFedExTest < Minitest::Test
     assert response.rates.length > 0
     response.rates.each do |rate|
       assert_instance_of String, rate.service_name
-      assert_instance_of Fixnum, rate.price
+      assert_kind_of Integer, rate.price
     end
   end
 
@@ -225,7 +225,7 @@ class RemoteFedExTest < Minitest::Test
     assert_equal "Delivered", response.status_description
 
     assert_equal Time.parse('Fri, 03 Jan 2014'), response.ship_time
-    assert_equal nil, response.scheduled_delivery_date
+    assert_nil response.scheduled_delivery_date
     assert_equal Time.parse('2014-01-09 18:31:00 +0000'), response.actual_delivery_date
 
     origin_address = ActiveShipping::Location.new(
@@ -242,6 +242,9 @@ class RemoteFedExTest < Minitest::Test
     )
     assert_equal destination_address.to_hash, response.destination.to_hash
     assert_equal 11, response.shipment_events.length
+    assert_equal 'OC', response.shipment_events.first.type_code
+    assert_equal 'PU', response.shipment_events.second.type_code
+    assert_equal 'AR', response.shipment_events.third.type_code
   end
 
   def test_find_tracking_info_for_in_transit_shipment_1
@@ -254,8 +257,11 @@ class RemoteFedExTest < Minitest::Test
     assert_equal 'FD', response.status_code
     assert_equal "At FedEx destination facility", response.status_description
     assert_equal 7, response.shipment_events.length
+    assert_equal 'PU', response.shipment_events.first.type_code
+    assert_equal 'OC', response.shipment_events.second.type_code
+    assert_equal 'AR', response.shipment_events.third.type_code
     assert_nil response.actual_delivery_date
-    assert_equal nil, response.scheduled_delivery_date
+    assert_nil response.scheduled_delivery_date
   end
 
   def test_find_tracking_info_for_in_transit_shipment_2
@@ -269,8 +275,8 @@ class RemoteFedExTest < Minitest::Test
     assert_equal "Arrived at FedEx location", response.status_description
 
     assert_equal Time.parse('Fri, 03 Jan 2014'), response.ship_time
-    assert_equal nil, response.scheduled_delivery_date
-    assert_equal nil, response.actual_delivery_date
+    assert_nil response.scheduled_delivery_date
+    assert_nil response.actual_delivery_date
 
     origin_address = ActiveShipping::Location.new(
       city: 'CAMBRIDGE',
@@ -286,6 +292,9 @@ class RemoteFedExTest < Minitest::Test
     )
     assert_equal destination_address.to_hash, response.destination.to_hash
     assert_equal 3, response.shipment_events.length
+    assert_equal 'PU', response.shipment_events.first.type_code
+    assert_equal 'OC', response.shipment_events.second.type_code
+    assert_equal 'AR', response.shipment_events.third.type_code
   end
 
   def test_find_tracking_info_with_multiple_matches
@@ -306,6 +315,8 @@ class RemoteFedExTest < Minitest::Test
       @carrier.find_tracking_info('abc')
     end
   end
+
+  ### create_shipment
 
   def test_cant_obtain_multiple_shipping_labels
     assert_raises(ActiveShipping::Error,"Multiple packages are not supported yet.") do
@@ -369,5 +380,21 @@ class RemoteFedExTest < Minitest::Test
 
     signature_option = response.params["ProcessShipmentReply"]["CompletedShipmentDetail"]["CompletedPackageDetails"]["SignatureOption"]
     assert_equal FedEx::SIGNATURE_OPTION_CODES[:adult], signature_option
+  end
+
+  def test_obtain_shipping_label_with_label_format_option
+    response = @carrier.create_shipment(
+      location_fixtures[:beverly_hills_with_name],
+      location_fixtures[:new_york_with_name],
+      package_fixtures[:wii],
+        :test => true,
+        :label_format => 'PDF'
+    )
+
+    assert response.success?
+    refute_empty response.labels
+    data = response.labels.first.img_data
+    refute_empty data
+    assert data[0...4] == '%PDF'
   end
 end

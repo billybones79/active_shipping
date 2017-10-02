@@ -1,6 +1,6 @@
 require 'test_helper'
 
-class USPSTest < Minitest::Test
+class USPSTest < ActiveSupport::TestCase
   include ActiveShipping::Test::Fixtures
 
   def setup
@@ -13,6 +13,11 @@ class USPSTest < Minitest::Test
       {number: '5555555555555555555555'},
       {number: '9405510ee200828613653750'}
     ]
+  end
+
+  def test_using_tls_and_not_ssl_v3
+    refute_equal :SSLv3, @carrier.ssl_version, 'SSLv3 is no longer supported by USPS Web Tools'
+    assert_equal :TLSv1_2, @carrier.ssl_version
   end
 
   def test_tracking_request_should_create_correct_xml
@@ -139,8 +144,11 @@ class USPSTest < Minitest::Test
     assert_nil response.scheduled_delivery_date
     assert_nil response.shipment_events.last.location.city
 
+    time = Time.at(0)
+    expected_utc_time = Time.utc(time.year, time.month, time.mday, time.hour, time.min, time.sec)
+
     assert_equal 'NP', response.shipment_events.first.type_code
-    assert_equal Time.parse('Jan 01, 2000'), response.shipment_events.first.time
+    assert_equal expected_utc_time, response.shipment_events.first.time
 
     special_country  = xml_fixture('usps/tracking_response_alt').gsub('CANADA','TAIWAN')
     @carrier.expects(:commit).returns(special_country)
@@ -157,13 +165,13 @@ class USPSTest < Minitest::Test
     # USPS API doesn't tell where it's going
     @carrier.expects(:commit).returns(@tracking_response)
     response = @carrier.find_tracking_info('9102901000462189604217', :test => true)
-    assert_equal response.destination, nil
+    assert_nil response.destination
   end
 
   def test_find_tracking_info_tracking_number
     @carrier.expects(:commit).returns(@tracking_response)
     response = @carrier.find_tracking_info('9102901000462189604217', :test => true)
-    assert_equal response.tracking_number, '9102901000462189604217'
+    assert_equal '9102901000462189604217', response.tracking_number
   end
 
   def test_find_tracking_info_should_have_correct_status
@@ -381,6 +389,13 @@ class USPSTest < Minitest::Test
     assert request =~ /\>90210\</
     assert !(request =~ /\>123456789\</)
     assert request =~ /\>12345\</
+  end
+
+  def test_strip_9_digit_zip_codes_world_rates
+    request = URI.decode(@carrier.send(:build_world_rate_request, location_fixtures[:beverly_hills_9_zip],
+                                        package_fixtures[:book], location_fixtures[:auckland], {}))
+    refute_match /\<OriginZip\>90210-1234/, request
+    assert_match /\<OriginZip\>90210/, request
   end
 
   def test_maximum_weight

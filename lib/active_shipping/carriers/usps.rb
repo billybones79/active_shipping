@@ -1,5 +1,3 @@
-# -*- encoding: utf-8 -*-
-
 module ActiveShipping
   # After getting an API login from USPS (looks like '123YOURNAME456'),
   # run the following test:
@@ -13,6 +11,7 @@ module ActiveShipping
     EventDetails = Struct.new(:description, :time, :zoneless_time, :location, :event_code)
     ONLY_PREFIX_EVENTS = ['DELIVERED','OUT FOR DELIVERY']
     self.retry_safe = true
+    self.ssl_version = :TLSv1_2
 
     cattr_reader :name
     @@name = "USPS"
@@ -113,11 +112,11 @@ module ActiveShipping
       :package_service => 'PACKAGESERVICE'
     }
 
+    ATTEMPTED_DELIVERY_CODES = %w(02 53 54 55 56 H0)
+
     # Array of U.S. possessions according to USPS: https://www.usps.com/ship/official-abbreviations.htm
     US_POSSESSIONS = %w(AS FM GU MH MP PW PR VI)
 
-    # TODO: figure out how USPS likes to say "Ivory Coast"
-    #
     # Country names:
     # http://pe.usps.gov/text/Imm/immctry.htm
     COUNTRY_NAME_CONVERSIONS = {
@@ -171,7 +170,7 @@ module ActiveShipping
     SERVICE_NAME_SUBSTITUTIONS = /#{ESCAPING_AND_SYMBOLS}|#{LEADING_USPS}|#{TRAILING_ASTERISKS}/
 
     def find_tracking_info(tracking_number, options = {})
-      options = @options.update(options)
+      options = @options.merge(options)
       tracking_request = build_tracking_request(tracking_number, options)
       response = commit(:track, tracking_request, options[:test] || false)
       parse_tracking_response(response).first
@@ -233,7 +232,7 @@ module ActiveShipping
     end
 
     def maximum_weight
-      Mass.new(70, :pounds)
+      Measured::Weight.new(70, :pounds)
     end
 
     def extract_event_details(node)
@@ -247,8 +246,8 @@ module ActiveShipping
         timestamp = "#{node.at('EventDate').text}, #{node.at('EventTime').text}"
         Time.parse(timestamp)
       else
-        # Arbitrary time in past, because we need to sort properly by time
-        Time.parse("Jan 01, 2000")
+        # Epoch time, because we need to sort properly by time
+        Time.at(0)
       end
 
       event_code = node.at('EventCode').text
@@ -421,7 +420,7 @@ module ActiveShipping
               xml.Length("%0.2f" % [package.inches(:length), 0.01].max)
               xml.Height("%0.2f" % [package.inches(:height), 0.01].max)
               xml.Girth("%0.2f" % [package.inches(:girth), 0.01].max)
-              xml.OriginZip(origin.zip)
+              xml.OriginZip(strip_zip(origin.zip))
               if commercial_type = commercial_type(options)
                 xml.public_send(COMMERCIAL_FLAG_NAME.fetch(commercial_type), 'Y')
               end
@@ -630,6 +629,8 @@ module ActiveShipping
 
         shipment_events = shipment_events.sort_by(&:time)
 
+        attempted_delivery_date = shipment_events.detect{ |shipment_event| ATTEMPTED_DELIVERY_CODES.include?(shipment_event.type_code) }.try(:time)
+
         if last_shipment = shipment_events.last
           status = last_shipment.status
           actual_delivery_date = last_shipment.time if last_shipment.delivered?
@@ -645,6 +646,7 @@ module ActiveShipping
                            :tracking_number => tracking_number,
                            :status => status,
                            :actual_delivery_date => actual_delivery_date,
+                           :attempted_delivery_date => attempted_delivery_date,
                            :scheduled_delivery_date => scheduled_delivery
       )
     end

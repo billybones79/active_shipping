@@ -517,6 +517,7 @@ module ActiveShipping
       }
 
       CPPWSContractShipmentGroupsResponse.new(true, "", {}, options)
+    end
     def self.default_location
       {
         :country     => 'CA',

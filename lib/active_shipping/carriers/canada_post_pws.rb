@@ -1248,6 +1248,18 @@ module ActiveShipping
       value == 0 ? 0.01 : value.round / 100.0
     end
 
+    def sanitize_location(location)
+      location_hash = location.is_a?(Location) ? location.to_hash : location
+      location_hash = sanitize_zip(location_hash)
+      Location.new(location_hash)
+    end
+    def sanitize_zip(hash)
+      [:postal_code, :zip].each do |attr|
+        hash[attr].gsub!(/\s+/, '') if hash[attr]
+      end
+      hash
+    end
+
     def origin_hash_for(root)
       occurrences = root.xpath('significant-events/occurrence')
       earliest = occurrences.sort_by { |occurrence| time_of_occurrence(occurrence) }.first

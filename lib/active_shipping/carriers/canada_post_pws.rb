@@ -139,8 +139,14 @@ module ActiveShipping
       error_response(e.response.body, CPPWSContractShippingResponse)
     end
 
+    def get_label(label_url, options = {})
+      ssl_get(label_url, headers(options, "application/pdf"))
+    rescue ActiveUtils::ResponseError, ActiveShipping::ResponseError => e
+      error_response(e.response.body, CPPWSContractShippingResponse)
+    end
+
     def retrieve_contract_shipping_label(contract_shipping_response, options = {})
-      raise MissingShippingNumberError unless contract_shipping_response && contract_shipping_response.shipping_id
+      raise MissingShippingNumberError unless contract_shipping_response && contract_shipping_response.label_url
       ssl_get(contract_shipping_response.label_url, headers(options, "application/pdf"))
     rescue ActiveUtils::ResponseError, ActiveShipping::ResponseError => e
       error_response(e.response.body, CPPWSContractShippingResponse)
@@ -353,7 +359,7 @@ module ActiveShipping
 
     def contract_shipment_print_preferences_node(xml, options)
       xml.public_send('print-preferences') do
-        xml.public_send('output-format', options[:output_format])  unless options[:output_format].blank?
+        xml.public_send('output-format', "4x6" )
         xml.public_send('encoding', 'ZPL')  unless options[:encoding].blank?
       end
     end
@@ -395,7 +401,6 @@ module ActiveShipping
 
     def contract_shipment_customs_node(xml, destination, line_items, options)
       return unless destination.country_code != 'CA'
-
       xml.public_send('customs') do
         currency = options[:currency] || "CAD"
         xml.public_send('currency', currency)

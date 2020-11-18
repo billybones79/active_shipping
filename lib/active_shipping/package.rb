@@ -28,7 +28,7 @@ module ActiveShipping #:nodoc:
       @weight_unit_system = weight_imperial ? :imperial : :metric
       @dimensions_unit_system = dimensions_imperial ? :imperial : :metric
 
-      @weight = attribute_from_metric_or_imperial(grams_or_ounces, Measured::Weight, @weight_unit_system, :grams, :ounces)
+      @weight = attribute_from_metric_or_imperial(grams_or_ounces, Measured::Weight, @weight_unit_system, :kilograms, :ounces)
 
       if @dimensions.blank?
         zero_length = Measured::Length.new(0, (dimensions_imperial ? :inches : :centimetres))
@@ -102,7 +102,7 @@ module ActiveShipping #:nodoc:
         @weight
       when :volumetric, :dimensional
         @volumetric_weight ||= begin
-          m = Measured::Weight.new((centimetres(:box_volume) / 6.0), :grams)
+          m = Measured::Weight.new((centimetres(:box_volume) / 6.0), :kilograms)
           @weight_unit_system == :imperial ? m.convert_to(:oz) : m
         end
       when :billable

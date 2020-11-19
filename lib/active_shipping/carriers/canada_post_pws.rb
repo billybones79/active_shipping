@@ -359,8 +359,8 @@ module ActiveShipping
 
     def contract_shipment_print_preferences_node(xml, options)
       xml.public_send('print-preferences') do
-        xml.public_send('output-format', "4x6" )
-        xml.public_send('encoding', 'ZPL')  unless options[:encoding].blank?
+        xml.public_send('output-format', options[:output_format])  unless options[:output_format].blank?
+        xml.public_send('encoding', 'PDF')  unless options[:encoding].blank?
       end
     end
 

@@ -359,7 +359,7 @@ module ActiveShipping
 
     def contract_shipment_print_preferences_node(xml, options)
       xml.public_send('print-preferences') do
-        xml.public_send('output-format', options[:output_format])  unless options[:output_format].blank?
+        xml.public_send('output-format', "8.5x11" )
         xml.public_send('encoding', 'PDF')  unless options[:encoding].blank?
       end
     end
@@ -934,6 +934,7 @@ module ActiveShipping
 
     def shipment_parcel_node(xml, package, options = {})
       weight = sanitize_weight_kg(package.kilograms.to_f)
+      byebug
       xml.public_send('parcel-characteristics') do
         xml.public_send('weight', "%#2.3f" % weight)
         pkg_dim = package.cm
